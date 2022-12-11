@@ -1,0 +1,149 @@
+from io import BytesIO
+import os
+import socket
+import hashlib
+import random
+#setup import for pillow
+from PIL import Image
+
+def generate_image(prompt):
+    # Calculate the hash of the prompt
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
+
+    # Use the hash of the prompt as a seed for the random number generator
+    random.seed(prompt_hash)
+
+    #use pillow to create an image
+    image = Image.new("RGB", (512, 512))
+
+    #fill the image with random pixels
+    for x in range(512):
+        for y in range(512):
+            image.putpixel((x, y), (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255)))
+    
+    #display the image
+   # image.show()
+    #convert the image to bytes
+
+    return image
+
+
+# Create a socket object
+server_socket = socket.socket()
+
+# Get the hostname
+host = socket.gethostname()
+
+# Set a port number
+port = 12345
+
+# Bind the socket to the port
+server_socket.bind((host, port))
+
+# Start listening for incoming connections
+server_socket.listen(5)
+
+
+
+#database for hash and image 
+
+import sqlite3
+
+# create a new database if one does not already exist
+conn = sqlite3.connect("mydatabase.db")
+
+# create a cursor to perform database operations
+cursor = conn.cursor()
+
+# create a new table if one does not already exist
+cursor.execute("""CREATE TABLE IF NOT EXISTS images (
+    prompt_hash text,
+    path text
+)""")
+
+# commit the changes to the database
+conn.commit()
+
+def GetImage(prompt):
+    # Calculate the hash of the prompt
+    prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
+    # Check if the image for this prompt has already been generated in the database
+    cursor.execute("SELECT * FROM images WHERE prompt_hash=?", (prompt_hash,))
+    result = cursor.fetchone()
+    if result:
+        # If it has, retrieve the image from the database
+        image = result[1]
+        #load the image from the path
+        image = Image.open(image)
+    else:
+        # If it hasn't, generate the image and store it in the database
+        image = generate_image(prompt)
+        
+        #save the image in cache folder, if it does not exist, create it
+        if not os.path.exists("cache"):
+            os.makedirs("cache")
+        image.save(f"cache/{prompt_hash}.png")
+
+        #insert the image path and hash into the database
+        cursor.execute("INSERT INTO images VALUES (?, ?)", (prompt_hash, f"cache/{prompt_hash}.png"))
+        conn.commit()
+    return image
+
+while True:
+    try:
+        # Accept a connection
+        client_socket, address = server_socket.accept()
+        
+        # Keep the socket open until the client disconnects
+        while True:
+            # Receive the prompt from the client
+            prompt = client_socket.recv(1024).decode()
+
+            # If the client sends an empty message, it means it has disconnected
+            if not prompt:
+                break
+
+            image = GetImage(prompt)
+            stream = BytesIO()
+            image.save(stream, "PNG")
+            bytes = stream.getvalue()
+            
+
+            # Send the image to the client
+            client_socket.send(bytes)
+    except socket.error as exc:
+        print ("Caught exception socket.error : %s" % exc)
+
+    # Close the connection
+    client_socket.close()
+
+
+
+while True:
+    try:
+        # Receive the prompt from the client
+        prompt = client_socket.recv(1024).decode()
+
+        # If the client sends an empty message, it means it has disconnected
+        if not prompt:
+            break
+
+        # Calculate the hash of the prompt
+        prompt_hash = hashlib.sha256(prompt.encode()).hexdigest()
+
+        # Check if the image for this prompt has already been generated
+        if prompt_hash in image_cache:
+            # If it has, retrieve the image from the cache
+            image = image_cache[prompt_hash]
+        else:
+            # If it hasn't, generate the image and store it in the cache
+            image = generate_image(prompt)
+            image_cache[prompt_hash] = image
+
+        # Send the image to the client
+        client_socket.send(image)
+    except ConnectionClosed:
+        break
+
+# Close the connection
+client_socket.close()
